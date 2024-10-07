@@ -1,101 +1,374 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import Canvas from "@/components/Canvas";
+import LeftSidebar from "@/components/LeftSidebar";
+import Navbar from "@/components/Navbar";
+import RightSidebar from "@/components/RightSidebar";
+import { defaultNavElement } from "@/constants";
+import {
+  handleCanvaseMouseMove,
+  handleCanvasMouseDown,
+  handleCanvasMouseUp,
+  handleCanvasObjectModified,
+  handleCanvasObjectMoving,
+  handleCanvasObjectScaling,
+  handleCanvasSelectionCreated,
+  handlePathCreated,
+  initializeFabric,
+} from "@/lib/canvas";
+import { handleDelete } from "@/lib/key-events";
+import { handleImageUpload } from "@/lib/shapes";
+import { ActiveElement, Attributes } from "@/types/type";
+import { fabric } from "fabric";
+import { useEffect, useRef, useState } from "react";
+
+const Home = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fabricRef = useRef<fabric.Canvas | null>(null);
+  const isDrawing = useRef(false);
+  const shapeRef = useRef<fabric.Object | null>(null);
+  const selectedShapeRef = useRef<string | null>(null);
+
+  const activeObjectRef = useRef<fabric.Object | null>(null);
+  const isEditingRef = useRef(false);
+
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const [suggestionBox, setSuggestionBox] = useState({
+    visible: false,
+    x: 0,
+    y: 0,
+    suggestion: "",
+  });
+
+  const showSuggestionBox = (x: number, y: number, suggestion: string) => {
+    setSuggestionBox({
+      visible: true,
+      x,
+      y,
+      suggestion,
+    });
+  };
+
+  const hideSuggestionBox = () => {
+    setSuggestionBox({
+      visible: false,
+      x: 0,
+      y: 0,
+      suggestion: "",
+    });
+  };
+
+  const [activeElement, setActiveElement] = useState<ActiveElement>({
+    name: "",
+    value: "",
+    icon: "",
+  });
+
+  const [elementAttributes, setElementAttributes] = useState<Attributes>({
+    width: "",
+    height: "",
+    fontSize: "",
+    fontFamily: "",
+    fontWeight: "",
+    fill: "#aabbcc",
+    stroke: "#aabbcc",
+  });
+
+  const handleActiveElement = (elem: ActiveElement) => {
+    setActiveElement(elem);
+
+    switch (elem?.value) {
+      case "reset":
+        fabricRef.current?.clear();
+        setActiveElement(defaultNavElement);
+        break;
+      case "delete":
+        handleDelete(fabricRef.current as any);
+        setActiveElement(defaultNavElement);
+        break;
+      case "image":
+        break;
+      case "comments":
+        break;
+      default:
+        selectedShapeRef.current = elem?.value as string;
+        break;
+    }
+  };
+
+  const checkGrammar = async (textElement: fabric.Textbox) => {
+    const text = textElement.text || "";
+
+    try {
+      const response = await fetch("https://api.sapling.ai/api/v1/edits", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          key: "02T1BD34ZL5ID0WUIH6R0NIF42LQDSY7",
+          session_id: "your-session-id",
+          text,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.msg || "Something went wrong");
+      }
+
+      const data = await response.json();
+
+      clearGrammarHighlight(textElement, 0, text.length);
+
+      if (data.edits.length > 0) {
+        highlightGrammarIssue(
+          textElement,
+          data.edits.map((issue: any) => ({
+            start: issue.start + issue.sentence_start,
+            end: issue.end + issue.sentence_start,
+            replacement: issue.replacement,
+            type: issue.general_error_type,
+          }))
+        );
+      }
+    } catch (error) {
+      console.error("Error checking grammar:", error);
+    }
+  };
+
+  const highlightGrammarIssue = (
+    textElement: fabric.Textbox,
+    issues: {
+      start: number;
+      end: number;
+      replacement: string;
+      type: string;
+    }[]
+  ) => {
+    issues.forEach((issue) => {
+      for (let i = issue.start; i < issue.end; i++) {
+        if (!textElement.styles[0]) {
+          textElement.styles[0] = {};
+        }
+
+        let style = {};
+        switch (issue.type) {
+          case "Punctuation":
+            style = { underline: true, fill: "orange" };
+            break;
+          case "Grammar":
+            style = { underline: true, fill: "blue" };
+            break;
+          default:
+            style = { underline: true, fill: "red" };
+        }
+
+        textElement.styles[0][i] = {
+          ...style,
+          mouseover: () => {
+            console.log("called!!!");
+
+            const transform = textElement.calcTransformMatrix();
+            const left = transform[4];
+            const top = transform[5];
+            showSuggestionBox(left, top, issue.replacement);
+          },
+        };
+      }
+    });
+
+    textElement.set("dirty", true);
+    textElement.canvas?.renderAll();
+  };
+
+  const clearGrammarHighlight = (
+    textElement: fabric.Textbox,
+    start: number,
+    end: number
+  ) => {
+    for (let i = start; i < end; i++) {
+      if (textElement.styles[0] && textElement.styles[0][i]) {
+        delete textElement.styles[0][i];
+      }
+    }
+
+    textElement.set("dirty", true);
+    textElement.canvas?.renderAll();
+  };
+
+  useEffect(() => {
+    if (!canvasRef.current) {
+      return;
+    }
+
+    const canvas = initializeFabric({
+      fabricRef,
+      canvasRef,
+    });
+
+    canvas.on("mouse:down", (options) => {
+      handleCanvasMouseDown({
+        options,
+        canvas,
+        selectedShapeRef,
+        isDrawing,
+        shapeRef,
+      });
+    });
+
+    canvas.on("mouse:move", (options) => {
+      handleCanvaseMouseMove({
+        options,
+        canvas,
+        isDrawing,
+        selectedShapeRef,
+        shapeRef,
+      });
+    });
+
+    canvas.on("mouse:up", () => {
+      handleCanvasMouseUp({
+        canvas,
+        isDrawing,
+        shapeRef,
+        activeObjectRef,
+        selectedShapeRef,
+        setActiveElement,
+      });
+    });
+
+    canvas.on("path:created", (options) => {
+      handlePathCreated({
+        options,
+      });
+    });
+
+    canvas.on("object:modified", (options) => {
+      handleCanvasObjectModified({
+        options,
+      });
+    });
+
+    canvas.on("object:moving", (options) => {
+      handleCanvasObjectMoving({
+        options,
+      });
+    });
+
+    canvas.on("selection:created", (options) => {
+      handleCanvasSelectionCreated({
+        options,
+        isEditingRef,
+        setElementAttributes,
+      });
+    });
+
+    canvas.on("object:scaling", (options) => {
+      handleCanvasObjectScaling({
+        options,
+        setElementAttributes,
+      });
+    });
+
+    canvas.on("text:changed", (event) => {
+      const activeText = event.target as fabric.Textbox;
+      if (activeText) {
+        checkGrammar(activeText);
+      }
+    });
+
+    return () => {
+      canvas.dispose();
+    };
+  }, [canvasRef]);
+
+  useEffect(() => {
+    const canvas = fabricRef.current;
+
+    if (canvas) {
+      canvas.on("mouse:move", handleMouseOver);
+    }
+
+    return () => {
+      if (canvas) {
+        canvas.off("mouse:move", handleMouseOver);
+      }
+    };
+  }, []);
+
+  const handleMouseOver = (event) => {
+    const canvas = fabricRef.current;
+    const pointer = canvas?.getPointer(event.e);
+
+    const objects = canvas?.getObjects();
+
+    objects?.forEach((object) => {
+      if (object instanceof fabric.Textbox) {
+        const { left, top, width, height } = object.getBoundingRect();
+        if (
+          pointer &&
+          pointer.x > left &&
+          pointer.x < left + width &&
+          pointer.y > top &&
+          pointer.y < top + height
+        ) {
+          const style = object.styles[0];
+
+          console.log(style);
+
+          if (style) {
+            Object.keys(style).forEach((key) => {
+              if (style[key]?.mouseover) {
+                style[key].mouseover();
+              } else {
+                hideSuggestionBox();
+              }
+            });
+          }
+        } else {
+          hideSuggestionBox();
+        }
+      }
+    });
+  };
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <main className="h-screen overflow-hidden">
+      <Navbar
+        imageInputRef={imageInputRef}
+        activeElement={activeElement}
+        handleActiveElement={handleActiveElement}
+        handleImageUpload={(e: any) => {
+          e.stopPropagation();
+          handleImageUpload({
+            file: e.target.files[0],
+            canvas: fabricRef as any,
+            shapeRef,
+          });
+        }}
+      />
+      <section className="flex h-full">
+        <LeftSidebar />
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+        <Canvas canvasRef={canvasRef} />
+
+        <RightSidebar />
+      </section>
+      {suggestionBox.visible && (
+        <div
+          className="absolute bg-white border border-gray-400 p-2 shadow-lg"
+          style={{
+            top: suggestionBox.y,
+            left: suggestionBox.x,
+          }}
+        >
+          <p>{suggestionBox.suggestion}</p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      )}
+    </main>
   );
-}
+};
+
+export default Home;
